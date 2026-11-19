@@ -45,6 +45,7 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 - Unknown fields are ignored.
 
 ### Processing order
+0. Reject with **413** `{ "error": "payload too large" }` if the body is over **64 KB**: first by a declared `Content-Length`, before reading anything, then by capping the read itself (the header can be absent or wrong). This runs before the signature check.
 1. Read the **raw body** (the signature is over the exact bytes).
 2. Reject with **401** if `x-signature` or `x-timestamp` is missing, the signature doesn't match, or the timestamp is more than **5 minutes** from now in either direction (replay protection). `x-timestamp` must parse as an integer number of seconds; anything else (including `NaN`) is **401**.
 3. Parse JSON and validate with zod. Invalid payload (including a future `occurred_at`, see above): **400**.
@@ -58,6 +59,8 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 | `processed` (applied, or recorded with no status change) | 200 | `{ "status": "processed" }` |
 | `pending` (non-`signup` event for a creator that doesn't exist yet) | 200 | `{ "status": "pending" }` |
 | `email_conflict` (`signup` with a new id but an email that already exists) | 409 | `{ "error": "email already in use" }` |
+
+Database errors: `22P05` and `22021` (text the database can't store, e.g. NUL in an ignored field) are **400** `{ "error": "invalid payload" }`. Every other database error, including `22P02` (which a bug in our SQL could raise), is **500** `{ "error": "internal error" }`, so the sender retries.
 
 ### Logging
 - Never log payloads or secrets. Log only `event_id`, `creator_id` and `step`, with the `[onboarding]` prefix.
@@ -194,6 +197,7 @@ Tests must cover:
 - [ ] Missing or invalid signature returns 401
 - [ ] Timestamp older than 5 minutes (or more than 5 minutes ahead, or non-integer) returns 401
 - [ ] Invalid payload returns 400
+- [ ] Body over 64 KB returns 413 before the body is read (and with a missing or wrong `Content-Length`)
 - [ ] `occurred_at` more than 5 minutes in the future returns 400
 - [ ] Same `event_id` twice: second call returns `duplicate` and has no side effects
 - [ ] Out-of-order event (`app_installed` after `payment_done`) does not move status back
