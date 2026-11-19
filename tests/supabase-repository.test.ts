@@ -204,6 +204,13 @@ describe("createSupabaseCreatorRepository", () => {
     expect(String(err)).not.toContain("stack trace");
   });
 
+  it("an empty error code (network failure) becomes undefined", async () => {
+    supabaseMock.rpc.mockResolvedValueOnce({ data: null, error: { code: "", message: "TypeError: fetch failed" } });
+    const err = await createSupabaseCreatorRepository().claimStuckCreators().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RepositoryError);
+    expect((err as RepositoryError).code).toBeUndefined();
+  });
+
   it("passes data through on success", async () => {
     supabaseMock.rpc.mockResolvedValueOnce({ data: [], error: null });
     await expect(createSupabaseCreatorRepository().claimStuckCreators()).resolves.toEqual([]);

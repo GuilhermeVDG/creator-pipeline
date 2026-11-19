@@ -58,7 +58,8 @@ export interface CreatorRepository {
   processEvent(input: ProcessEventInput): Promise<ProcessResult>;
   /**
    * Atomically finds creators stuck for STUCK_AFTER_HOURS+ that haven't been
-   * alerted for their current step, marks them alerted, and returns them.
+   * alerted for their current step, marks them alerted, and returns them,
+   * longest stuck first (oldest last_step_at).
    */
   claimStuckCreators(): Promise<ClaimedStuckCreator[]>;
 }
@@ -192,7 +193,8 @@ export class InMemoryCreatorRepository implements CreatorRepository {
       this.creators.set(c.id, copyCreator({ ...c, stuckAlertSentAt: now }));
       claimed.push({ id: c.id, name: c.name, handle: c.handle, status: c.status, lastStepAt: copyDate(c.lastStepAt) });
     }
-    return claimed;
+    // Same order as the SQL: longest stuck first (matters when the Slack list is cut at 30).
+    return claimed.sort((a, b) => a.lastStepAt.getTime() - b.lastStepAt.getTime());
   }
 
   // --- Test helpers (not part of CreatorRepository) ---
@@ -367,7 +369,8 @@ export function createSupabaseCreatorRepository(): CreatorRepository {
   });
   const rpc: RpcCall = async (fn, args) => {
     const { data, error } = await client.rpc(fn, args);
-    return { data, error: error === null ? null : { code: error.code } };
+    // postgrest-js reports network/fetch failures with code "": treat as unknown.
+    return { data, error: error === null ? null : { code: error.code === "" ? undefined : error.code } };
   };
   return new SupabaseCreatorRepository(rpc);
 }

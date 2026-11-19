@@ -45,6 +45,7 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 - Unknown fields are ignored.
 
 ### Processing order
+0. Reject with **413** `{ "error": "payload too large" }` if the body is over **64 KB**: first by a declared `Content-Length`, before reading anything, then by capping the read itself (the header can be absent or wrong). This runs before the signature check.
 1. Read the **raw body** (the signature is over the exact bytes).
 2. Reject with **401** if `x-signature` or `x-timestamp` is missing, the signature doesn't match, or the timestamp is more than **5 minutes** from now in either direction (replay protection). `x-timestamp` must parse as an integer number of seconds; anything else (including `NaN`) is **401**.
 3. Parse JSON and validate with zod. Invalid payload (including a future `occurred_at`, see above): **400**.
@@ -58,6 +59,8 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 | `processed` (applied, or recorded with no status change) | 200 | `{ "status": "processed" }` |
 | `pending` (non-`signup` event for a creator that doesn't exist yet) | 200 | `{ "status": "pending" }` |
 | `email_conflict` (`signup` with a new id but an email that already exists) | 409 | `{ "error": "email already in use" }` |
+
+Database errors: `22P05` and `22021` (text the database can't store, e.g. NUL in an ignored field) are **400** `{ "error": "invalid payload" }`. Every other database error, including `22P02` (which a bug in our SQL could raise), is **500** `{ "error": "internal error" }`, so the sender retries.
 
 ### Logging
 - Never log payloads or secrets. Log only `event_id`, `creator_id` and `step`, with the `[onboarding]` prefix.
@@ -140,13 +143,16 @@ The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in 
 
 ## 4. Stuck creators cron
 
-`GET /api/cron/stuck-creators`, called by Vercel Cron every hour.
+`GET /api/cron/stuck-creators`, called by Vercel Cron.
+
+- **Production schedule: every hour** (`0 * * * *`). Needs Vercel Pro or higher.
+- **Current deployment (Vercel Hobby): once a day** (`0 12 * * *`, 12:00 UTC) in `vercel.json`, because Hobby only allows daily crons, and may fire anywhere within that hour. A creator can then be alerted up to ~24h after crossing 48h. Switch `vercel.json` to `0 * * * *` when moving to Pro; nothing else changes.
 
 - Requires `Authorization: Bearer ${CRON_SECRET}` (timing-safe compare), otherwise **401**.
 - One atomic statement selects and marks the creators:
   `update creators set stuck_alert_sent_at = now() where status <> 'live' and last_step_at < now() - interval '48 hours' and stuck_alert_sent_at is null returning ...`
   This way overlapping runs can't double-alert, and a creator who moves forward at the same moment isn't marked for the new step.
-- Send **one** Slack message listing the returned creators (name, handle, current step, hours stuck since `last_step_at`). No message if none.
+- Send **one** Slack message listing the returned creators (name, handle, current step, hours stuck since `last_step_at`), **longest stuck first**. When the list is cut at 30 lines (section 5), the 30 longest stuck are shown. No message if none.
 - Respond `{ "alerted": <count> }`.
 - **Known limitation:** creators are marked before Slack is called. If Slack fails right after the update, those alerts are lost (no retry queue, see section 7). The failure is logged with `[cron]`/`[slack]`. The same applies if the database's response can't be parsed after the update (logged as `[cron]` with code `unexpected_shape`).
 
@@ -194,6 +200,7 @@ Tests must cover:
 - [ ] Missing or invalid signature returns 401
 - [ ] Timestamp older than 5 minutes (or more than 5 minutes ahead, or non-integer) returns 401
 - [ ] Invalid payload returns 400
+- [ ] Body over 64 KB returns 413 before the body is read (and with a missing or wrong `Content-Length`)
 - [ ] `occurred_at` more than 5 minutes in the future returns 400
 - [ ] Same `event_id` twice: second call returns `duplicate` and has no side effects
 - [ ] Out-of-order event (`app_installed` after `payment_done`) does not move status back

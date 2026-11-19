@@ -20,8 +20,19 @@ Run the SQL in `supabase/migrations/` in the Supabase SQL editor (or with the Su
 node --env-file=.env.local .claude/skills/send-test-webhook/send.mjs --step signup
 ```
 
+## Deploy (Vercel)
+- Stuck-creators cron: `vercel.json` runs it **once a day** (`0 12 * * *`, UTC) because the project is on Vercel Hobby, which only allows daily crons.
+- **Production schedule is hourly** (`0 * * * *`, Vercel Pro or higher). To switch, change the `schedule` in `vercel.json`; no code changes.
+- Crons only run on production deployments. Set `CRON_SECRET` in the Vercel project; Vercel sends it as `Authorization: Bearer <CRON_SECRET>`.
+
 ## Tests
 ```bash
 npm test
 npx tsc --noEmit
 ```
+
+Opt-in integration test against the **dev** Supabase project (apply the migration there first; credentials from `.env.local`):
+```bash
+npm run test:integration
+```
+It tags every row (`evt_test_…` event ids, `@test.invalid` emails), marks its creators as already alerted so the cron never posts them, and prints a cleanup `delete` for the SQL editor (the service role has no DELETE).

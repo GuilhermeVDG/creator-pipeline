@@ -1,0 +1,24 @@
+import { createSupabaseCreatorRepository } from "@/src/lib/creators/repository";
+import { getEnv } from "@/src/lib/env";
+import { createSlackClient } from "@/src/lib/slack";
+import { createOnboardingHandler, type OnboardingDeps } from "@/src/lib/webhooks/handler";
+
+// Built once per instance, on the first request (not at import, so the build
+// doesn't need secrets). If env is invalid, nothing is cached and the request gets a 500.
+let deps: OnboardingDeps | undefined;
+
+function getDeps(): OnboardingDeps {
+  if (deps === undefined) {
+    const env = getEnv();
+    deps = {
+      repository: createSupabaseCreatorRepository(),
+      slack: createSlackClient({ webhookUrl: env.SLACK_WEBHOOK_URL }),
+      webhookSecret: env.WEBHOOK_SECRET,
+      now: () => new Date(),
+      logger: console,
+    };
+  }
+  return deps;
+}
+
+export const POST = createOnboardingHandler(getDeps);
