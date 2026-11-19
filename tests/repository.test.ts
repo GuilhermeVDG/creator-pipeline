@@ -280,6 +280,20 @@ describe("claimStuckCreators", () => {
     expect(await repo.claimStuckCreators()).toEqual([]);
   });
 
+  it("returns the longest stuck first, like the SQL", async () => {
+    const now = { value: hours(100) };
+    const repo = new InMemoryCreatorRepository({ now: () => now.value });
+    await process(repo, makeEvent("signup", hours(10), "evt_a"));
+    await process(repo, {
+      eventId: "evt_b",
+      creatorId: OTHER_ID,
+      step: "signup",
+      occurredAt: hours(5),
+      profile: { ...PROFILE, email: "bo@example.com" },
+    });
+    expect((await repo.claimStuckCreators()).map((c) => c.id)).toEqual([OTHER_ID, CREATOR_ID]);
+  });
+
   it("pending events don't create stuck creators", async () => {
     const now = { value: hours(100) };
     const repo = new InMemoryCreatorRepository({ now: () => now.value });
