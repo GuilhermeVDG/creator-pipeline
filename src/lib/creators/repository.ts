@@ -3,9 +3,13 @@
 // - `InMemoryCreatorRepository`: a fake with the same semantics as the SQL
 //   function `process_onboarding_event`, used by tests and checked against
 //   the shared transition table.
-// - The Supabase implementation comes with the migration (step 7).
+// - `SupabaseCreatorRepository`: calls the SQL functions in
+//   supabase/migrations via RPC and validates their responses with zod.
 // Server only: the Supabase implementation holds the service role key.
 import "server-only";
+import { createClient } from "@supabase/supabase-js";
+import { z } from "zod";
+import { getEnv } from "@/src/lib/env";
 import { nextState, reconcile, type Status, type StepEvent } from "@/src/lib/creators/transitions";
 import type { OnboardingEvent } from "@/src/lib/webhooks/schema";
 
@@ -237,4 +241,133 @@ function copyCreator(row: CreatorRow): CreatorRow {
     createdAt: copyDate(row.createdAt),
     updatedAt: copyDate(row.updatedAt),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Supabase implementation
+
+/** RepositoryError.code when the database answered but the response didn't validate. */
+export const UNEXPECTED_SHAPE = "unexpected_shape";
+
+/** Thrown when the database call fails or returns something unexpected. */
+export class RepositoryError extends Error {
+  override name = "RepositoryError";
+  /** Postgres / PostgREST error code, safe to log (never the message: it can contain row values). */
+  readonly code: string | undefined;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export type RpcArgs = {
+  process_onboarding_event: {
+    p_event_id: string;
+    p_creator_id: string;
+    p_step: OnboardingEvent["step"];
+    p_occurred_at: string;
+    p_payload: JsonValue;
+    p_name: string | null;
+    p_email: string | null;
+    p_handle: string | null;
+  };
+  claim_stuck_creators: { p_min_hours: number };
+};
+
+/** The one thing the repository needs from supabase-js, so tests can fake it. */
+export type RpcCall = <F extends keyof RpcArgs>(
+  fn: F,
+  args: RpcArgs[F],
+) => Promise<{ data: unknown; error: { code?: string } | null }>;
+
+const timestamp = z.iso.datetime({ offset: true }).transform((s) => new Date(s));
+
+const processResponse = z.union([
+  z.object({ result: z.enum(["duplicate", "pending", "email_conflict"]) }),
+  z.object({ result: z.literal("processed"), became_live: z.literal(false) }),
+  z.object({
+    result: z.literal("processed"),
+    became_live: z.literal(true),
+    name: z.string(),
+    handle: z.string().nullable(),
+    onboarding_started_at: timestamp,
+    live_at: timestamp,
+  }),
+]);
+
+const claimResponse = z.array(
+  z.object({
+    id: z.guid(),
+    name: z.string(),
+    handle: z.string().nullable(),
+    status: z.enum(["signed_up", "app_installed"]),
+    last_step_at: timestamp,
+  }),
+);
+
+export class SupabaseCreatorRepository implements CreatorRepository {
+  constructor(private readonly rpc: RpcCall) {}
+
+  async processEvent({ event, payload }: ProcessEventInput): Promise<ProcessResult> {
+    const profile = event.step === "signup" ? event.profile : null;
+    const { data, error } = await this.rpc("process_onboarding_event", {
+      p_event_id: event.eventId,
+      p_creator_id: event.creatorId,
+      p_step: event.step,
+      p_occurred_at: event.occurredAt.toISOString(),
+      p_payload: payload,
+      p_name: profile?.name ?? null,
+      p_email: profile?.email ?? null,
+      p_handle: profile?.handle ?? null,
+    });
+    if (error) throw new RepositoryError("process_onboarding_event failed", error.code);
+
+    const parsed = processResponse.safeParse(data);
+    if (!parsed.success) {
+      throw new RepositoryError("process_onboarding_event returned an unexpected shape", UNEXPECTED_SHAPE);
+    }
+    const r = parsed.data;
+    if (r.result !== "processed") return { result: r.result };
+    if (!r.became_live) return { result: "processed", becameLive: false };
+    return {
+      result: "processed",
+      becameLive: true,
+      creator: { name: r.name, handle: r.handle, onboardingStartedAt: r.onboarding_started_at, liveAt: r.live_at },
+    };
+  }
+
+  async claimStuckCreators(): Promise<ClaimedStuckCreator[]> {
+    const { data, error } = await this.rpc("claim_stuck_creators", { p_min_hours: STUCK_AFTER_HOURS });
+    if (error) throw new RepositoryError("claim_stuck_creators failed", error.code);
+
+    const parsed = claimResponse.safeParse(data);
+    if (!parsed.success) {
+      // The rows are already marked as alerted, so these alerts are lost; the
+      // code lets the cron route log that distinctly (spec section 4).
+      throw new RepositoryError("claim_stuck_creators returned an unexpected shape", UNEXPECTED_SHAPE);
+    }
+    return parsed.data.map((c) => ({
+      id: c.id,
+      name: c.name,
+      handle: c.handle,
+      status: c.status,
+      lastStepAt: c.last_step_at,
+    }));
+  }
+}
+
+/**
+ * Builds the production repository from env (validated on first use). Creates
+ * a new client each call: route modules should call it once and reuse it.
+ */
+export function createSupabaseCreatorRepository(): CreatorRepository {
+  const env = getEnv();
+  const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+  const rpc: RpcCall = async (fn, args) => {
+    const { data, error } = await client.rpc(fn, args);
+    return { data, error: error === null ? null : { code: error.code } };
+  };
+  return new SupabaseCreatorRepository(rpc);
 }
