@@ -62,7 +62,7 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 | `status` | text not null | `signed_up`, `app_installed`, `live` |
 | `last_step_at` | timestamptz not null | earliest `occurred_at` among recorded events for the current status (see section 3) |
 | `stuck_alert_sent_at` | timestamptz null | reset to null when status changes |
-| `onboarding_started_at` | timestamptz not null | `occurred_at` of the `signup` event; used for the live message duration |
+| `onboarding_started_at` | timestamptz not null | earliest `occurred_at` among recorded `signup` events; used for the live message duration |
 | `created_at` | timestamptz default now() | |
 | `updated_at` | timestamptz default now() | |
 
@@ -92,19 +92,35 @@ Rules:
 - Status only moves **forward**. An event with a lower rank than the current status is recorded but doesn't change the creator (webhooks can arrive out of order).
 - Skipping steps is allowed (`signup` straight to `payment_done` goes to `live`).
 - When status changes (higher rank): set `status`, `last_step_at = occurred_at`, `stuck_alert_sent_at = null`, `updated_at = now()`.
-- **One rule for `last_step_at`, regardless of arrival order:** it is always the earliest `occurred_at` among recorded events for the current status. So an equal-rank event with an earlier `occurred_at` moves `last_step_at` back (and sets `updated_at = now()`). That is **not** a status change: it doesn't reset `stuck_alert_sent_at` and doesn't send Slack. An equal-rank event with a later or equal `occurred_at` changes nothing. This includes a resent `signup` while `signed_up`; the resent signup never changes `name`, `email`, `handle` or `onboarding_started_at`.
+- **One rule for `last_step_at`, regardless of arrival order:** it is always the earliest `occurred_at` among recorded events for the current status. So an equal-rank event with an earlier `occurred_at` moves `last_step_at` back (and sets `updated_at = now()`). That is **not** a status change: it doesn't reset `stuck_alert_sent_at` and doesn't send Slack. An equal-rank event with a later or equal `occurred_at` changes nothing.
+- **Resent `signup`** (creator exists, new `event_id`):
+  - `onboarding_started_at` moves back if the resent signup's `occurred_at` is earlier (earliest wins), whatever the current status, so the live duration stays right.
+  - `last_step_at` moves back only while the creator is still `signed_up` (the equal-rank rule above).
+  - `name`, `email` and `handle` never change.
+  - Neither correction is a status change: no `stuck_alert_sent_at` reset, no Slack. The response is `processed`.
 - The transition logic lives in pure functions: `nextState(current, event) => { changed, status, lastStepAt, becameLive }` (`changed` means the status changed) and `reconcile(events)` for creation.
 
 ### 3.1 `process_onboarding_event` (Postgres function, called via RPC)
 Runs in a single transaction:
+0. **Per-creator lock:** `perform pg_advisory_xact_lock(hashtext(creator_id::text))`, before anything else. All events for one creator run one at a time, and each statement after the lock sees everything committed before it.
+   - Why: a row lock (`select ... for update`) can't protect a creator that doesn't exist yet. Without this lock, a `signup` and a concurrent `payment_done` can each miss the other's uncommitted rows: `payment_done` returns `pending`, `signup` reconciles without it, and the creator stays `signed_up` forever. Two concurrent `signup`s for the same id could also hit the `email` unique index first and wrongly return 409.
+   - The lock is released automatically at commit or rollback.
+   - `hashtext` is 32-bit, so two different creators can share a lock key. A collision only makes unrelated creators wait for each other; it never breaks correctness, which is fine at our volume.
 1. `insert into webhook_events ... on conflict (event_id) do nothing`. No row inserted: return `duplicate`.
 2. `signup` and creator doesn't exist: insert the creator with `onboarding_started_at = occurred_at`, reconciled from stored events (above). A unique violation on `email` rolls back the whole transaction (the event is **not** recorded) and returns `email_conflict`.
 3. Non-`signup` and creator doesn't exist: return `pending`.
-4. Otherwise, two **guarded conditional updates**, in order:
-   - Status change: `update creators set status = new_status, last_step_at = occurred_at, stuck_alert_sent_at = null, updated_at = now() where id = $id and rank(status) < rank(new_status) returning ...`. `became_live` is true only if this update returned a row and the new status is `live`.
-   - Only if the first updated nothing, time correction: `update creators set last_step_at = occurred_at, updated_at = now() where id = $id and rank(status) = rank(new_status) and occurred_at < last_step_at`.
+4. Otherwise, **guarded conditional updates**, in order:
+   - a. Status change: `update creators set status = new_status, last_step_at = occurred_at, stuck_alert_sent_at = null, updated_at = now() where id = $id and rank(status) < rank(new_status) returning ...`. `became_live` is true only if this update returned a row and the new status is `live`.
+   - b. Only if (a) updated nothing, time correction: `update creators set last_step_at = occurred_at, updated_at = now() where id = $id and rank(status) = rank(new_status) and occurred_at < last_step_at`.
+   - c. `signup` only, onboarding start correction: `update creators set onboarding_started_at = occurred_at, updated_at = now() where id = $id and occurred_at < onboarding_started_at`.
 
-   Postgres re-checks each `where` against the latest row version under the row lock, so concurrent events can't move status backwards, can't move `last_step_at` later, and only one of them can report `became_live`.
+   **Assumptions these updates rely on** (keep them when implementing):
+   - All of them run inside this one function, after the lock from step 0.
+   - No value read earlier is carried into a later statement. Each `where` decides from the current row; never compute a new `last_step_at` or status in plpgsql from an earlier `select`.
+   - (b) and (c) never touch `status` or `stuck_alert_sent_at`. Don't merge (a) and (b) into one `set` list with `case` expressions, because that makes it easy to reset `stuck_alert_sent_at` on a time correction.
+   - (b) uses `=` on rank, never `<=`: a lower-rank event must not move `last_step_at`.
+   - No update ever changes `name`, `email` or `handle` after creation.
+   - Even without the lock, each `where` is re-checked under the row lock against the latest row version (READ COMMITTED), so these updates on their own can't move status backwards or `last_step_at` later. The lock is what handles a creator that doesn't exist yet.
 5. Returns `{ result, became_live, name, handle, onboarding_started_at, live_at }`.
 
 The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in sync by one shared table of transition cases: the unit tests run it against `nextState` and the in-memory repository, and an integration test runs the same table against the SQL function.
@@ -139,7 +155,9 @@ The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in 
 - **Non-`signup` event for a creator that doesn't exist yet:** store it and return **200** `{ "status": "pending" }`. When `signup` creates the creator, reconcile from the stored events for that `creator_id` (`rank desc, occurred_at asc`, section 3), and send the live message if that gives `live`. Rejecting with 4xx was dropped: the event would already be recorded (retries become `duplicate`), and many senders don't retry on 4xx.
 - **Same transaction:** yes. One Postgres function, `process_onboarding_event`, called via RPC (section 3.1), with two guarded conditional updates (status change, then time correction); `became_live` comes from the status-change update result. We accept the rank rule living in TS and SQL, kept in sync by a shared table of transition cases.
 - **Signup with a new id but an existing email:** **409**, logged, not retried; the transaction is rolled back.
-- **Signup resent with a new `event_id`:** no-op on the creator, **200** `processed`.
+- **Signup resent with a new `event_id`:** **200** `processed`. Name, email and handle never change. An earlier `occurred_at` moves `onboarding_started_at` back (earliest wins), and moves `last_step_at` back only while still `signed_up` (section 3).
+- **`last_step_at` rule:** always the earliest `occurred_at` among recorded events for the current status, whatever the arrival order. An equal-rank correction is not a status change.
+- **Concurrency:** a per-creator advisory lock (`pg_advisory_xact_lock(hashtext(creator_id::text))`) at the top of `process_onboarding_event`, because a row lock can't cover a creator that doesn't exist yet. Hash collisions only make unrelated creators wait for each other, which is fine at our volume.
 - **`occurred_at` more than 5 minutes in the future:** **400**. Past dates are fine.
 - **Skipping steps:** allowed.
 - **Onboarding duration:** new column `onboarding_started_at` from the signup `occurred_at`, used for the live message.
@@ -158,7 +176,8 @@ Tests must cover:
 - [ ] Out-of-order event (`app_installed` after `payment_done`) does not move status back
 - [ ] Equal-rank event with an earlier `occurred_at` moves `last_step_at` back without resetting `stuck_alert_sent_at` or sending Slack
 - [ ] Non-`signup` event before `signup` returns `pending`; the later `signup` reconciles to the highest-ranked stored step, earliest among ties (and sends the live message if that's `payment_done`)
-- [ ] `signup` resent with a new `event_id` returns `processed` and doesn't change the creator
+- [ ] `signup` resent with a new `event_id` returns `processed` and never changes name, email or handle
+- [ ] `signup` resent with an earlier `occurred_at` moves `onboarding_started_at` back (any status) and `last_step_at` back only while `signed_up`
 - [ ] `signup` with a new id but an existing email returns 409 and records nothing
 - [ ] Live message duration uses `onboarding_started_at` and is clamped to 0
 - [ ] Slack messages escape `&`, `<`, `>`
@@ -166,4 +185,5 @@ Tests must cover:
 - [ ] Cron without the right token returns 401
 - [ ] Cron alerts a stuck creator once, and not again on the next run
 - [ ] The shared transition-case table passes against `nextState` (and later against the SQL function)
+- [ ] Integration (opt-in): concurrent `signup` and `payment_done` for a new creator always end `live` with one live message, and two concurrent `signup`s for the same id never return 409
 - [ ] `npm test` and `npx tsc --noEmit` pass
