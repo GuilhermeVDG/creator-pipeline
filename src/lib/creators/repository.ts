@@ -367,7 +367,8 @@ export function createSupabaseCreatorRepository(): CreatorRepository {
   });
   const rpc: RpcCall = async (fn, args) => {
     const { data, error } = await client.rpc(fn, args);
-    return { data, error: error === null ? null : { code: error.code } };
+    // postgrest-js reports network/fetch failures with code "": treat as unknown.
+    return { data, error: error === null ? null : { code: error.code === "" ? undefined : error.code } };
   };
   return new SupabaseCreatorRepository(rpc);
 }
