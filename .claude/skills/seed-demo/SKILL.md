@@ -39,6 +39,6 @@ delete from public.webhook_events where starts_with(event_id, 'evt_demo_');
 
 ## Cautions
 - The server posts **real Slack messages** (3 live messages while seeding, and the stuck alert when the cron runs) to whatever `SLACK_WEBHOOK_URL` it is configured with.
-- Use it against local or dev, not production.
+- Seeding production is fine for a demo. Use the production `WEBHOOK_SECRET` (e.g. `vercel env pull .env.production.local --environment=production`, then `--env-file=.env.production.local`), and run the cleanup SQL in the production SQL editor afterwards.
 
 Report the summary table and any non-200 responses.
