@@ -148,7 +148,7 @@ The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in 
   This way overlapping runs can't double-alert, and a creator who moves forward at the same moment isn't marked for the new step.
 - Send **one** Slack message listing the returned creators (name, handle, current step, hours stuck since `last_step_at`). No message if none.
 - Respond `{ "alerted": <count> }`.
-- **Known limitation:** creators are marked before Slack is called. If Slack fails right after the update, those alerts are lost (no retry queue, see section 7). The failure is logged with `[cron]`/`[slack]`.
+- **Known limitation:** creators are marked before Slack is called. If Slack fails right after the update, those alerts are lost (no retry queue, see section 7). The failure is logged with `[cron]`/`[slack]`. The same applies if the database's response can't be parsed after the update (logged as `[cron]` with code `unexpected_shape`).
 
 ## 5. Slack messages
 - Live: `:rocket: *{name}* ({handle}) is live! Onboarding took {hours}h.` (`hours` = `max(0, live_at − onboarding_started_at)`, where `live_at` is the `occurred_at` of the event that made the creator live. It is clamped to 0 because a pending `payment_done` can have an `occurred_at` earlier than the signup's. Rounded to one decimal, e.g. `26.3h`. The parentheses are left out when there is no handle.)
