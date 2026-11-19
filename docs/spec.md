@@ -31,6 +31,19 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 - `creator.name`, `creator.email` and `creator.handle` are required only on `signup`.
 - `occurred_at` more than **5 minutes in the future** is invalid (**400**). Past dates are accepted.
 
+#### Field rules (anything else is **400**)
+| Field | Rule |
+|---|---|
+| `event_id` | string, 1–255 chars, stored exactly as sent (not trimmed) |
+| `occurred_at` | RFC 3339 date-time with a timezone (`Z` or `±hh:mm`) |
+| `creator.id` | any 8-4-4-4-12 hex id; lowercased |
+| `creator.name` | trimmed, 1–200 chars |
+| `creator.email` | trimmed, at most 320 chars, a light `local@domain` check (one `@`, no whitespace). Non-ASCII addresses are accepted, since the upstream flow already validated them. Case is kept as sent. |
+| `creator.handle` | trimmed, 1–100 chars, any characters |
+
+- Text fields can't contain NUL (`\u0000`) or unpaired surrogates, which Postgres can't store.
+- Unknown fields are ignored.
+
 ### Processing order
 1. Read the **raw body** (the signature is over the exact bytes).
 2. Reject with **401** if `x-signature` or `x-timestamp` is missing, the signature doesn't match, or the timestamp is more than **5 minutes** from now in either direction (replay protection). `x-timestamp` must parse as an integer number of seconds; anything else (including `NaN`) is **401**.
@@ -57,7 +70,7 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 |---|---|---|
 | `id` | uuid PK | comes from the webhook |
 | `name` | text not null | |
-| `email` | text not null unique | |
+| `email` | text not null | stored as sent (trimmed); unique index on `lower(email)`, so the 409 rule is case-insensitive |
 | `handle` | text | |
 | `status` | text not null | `signed_up`, `app_installed`, `live` |
 | `last_step_at` | timestamptz not null | earliest `occurred_at` among recorded events for the current status (see section 3) |
@@ -107,7 +120,7 @@ Runs in a single transaction:
    - The lock is released automatically at commit or rollback.
    - `hashtext` is 32-bit, so two different creators can share a lock key. A collision only makes unrelated creators wait for each other; it never breaks correctness, which is fine at our volume.
 1. `insert into webhook_events ... on conflict (event_id) do nothing`. No row inserted: return `duplicate`.
-2. `signup` and creator doesn't exist: insert the creator with `onboarding_started_at = occurred_at`, reconciled from stored events (above). A unique violation on `email` rolls back the whole transaction (the event is **not** recorded) and returns `email_conflict`.
+2. `signup` and creator doesn't exist: insert the creator with `onboarding_started_at = occurred_at`, reconciled from stored events (above). A unique violation on `lower(email)` rolls back the whole transaction (the event is **not** recorded) and returns `email_conflict`.
 3. Non-`signup` and creator doesn't exist: return `pending`.
 4. Otherwise, **guarded conditional updates**, in order:
    - a. Status change: `update creators set status = new_status, last_step_at = occurred_at, stuck_alert_sent_at = null, updated_at = now() where id = $id and rank(status) < rank(new_status) returning ...`. `became_live` is true only if this update returned a row and the new status is `live`.
