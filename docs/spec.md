@@ -60,7 +60,7 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 | `email` | text not null unique | |
 | `handle` | text | |
 | `status` | text not null | `signed_up`, `app_installed`, `live` |
-| `last_step_at` | timestamptz not null | `occurred_at` of the last step that changed status |
+| `last_step_at` | timestamptz not null | earliest `occurred_at` among recorded events for the current status (see section 3) |
 | `stuck_alert_sent_at` | timestamptz null | reset to null when status changes |
 | `onboarding_started_at` | timestamptz not null | `occurred_at` of the `signup` event; used for the live message duration |
 | `created_at` | timestamptz default now() | |
@@ -88,18 +88,23 @@ Rules:
 - `signup` creates the creator if it doesn't exist.
 - `signup` for a creator that already exists (new `event_id`) is a no-op on the creator: the event is recorded, the response is `processed`.
 - A non-`signup` event for a creator that doesn't exist yet is recorded and the response is `pending`. Nothing else happens until `signup` arrives.
-- When `signup` creates the creator, it **reconciles** from the highest-ranked event already stored for that `creator_id` (including the signup itself): `status` = that event's status, `last_step_at` = that event's `occurred_at`. If that event is `payment_done`, the creator `became_live` and the live message is sent.
-- Status only moves **forward**. An event with a lower or equal rank than the current status is recorded but doesn't change the creator (webhooks can arrive out of order).
+- When `signup` creates the creator, it **reconciles** from the events already stored for that `creator_id` (including the signup itself), ordered by `rank desc, occurred_at asc`. The first one gives `status` and `last_step_at`. If it is `payment_done`, the creator `became_live` and the live message is sent.
+- Status only moves **forward**. An event with a lower rank than the current status is recorded but doesn't change the creator (webhooks can arrive out of order).
 - Skipping steps is allowed (`signup` straight to `payment_done` goes to `live`).
-- When status changes: set `last_step_at = occurred_at`, `stuck_alert_sent_at = null`, `updated_at = now()`.
-- The transition logic lives in a pure function: `nextState(current, event) => { changed, status, becameLive }`.
+- When status changes (higher rank): set `status`, `last_step_at = occurred_at`, `stuck_alert_sent_at = null`, `updated_at = now()`.
+- **One rule for `last_step_at`, regardless of arrival order:** it is always the earliest `occurred_at` among recorded events for the current status. So an equal-rank event with an earlier `occurred_at` moves `last_step_at` back (and sets `updated_at = now()`). That is **not** a status change: it doesn't reset `stuck_alert_sent_at` and doesn't send Slack. An equal-rank event with a later or equal `occurred_at` changes nothing. This includes a resent `signup` while `signed_up`; the resent signup never changes `name`, `email`, `handle` or `onboarding_started_at`.
+- The transition logic lives in pure functions: `nextState(current, event) => { changed, status, lastStepAt, becameLive }` (`changed` means the status changed) and `reconcile(events)` for creation.
 
 ### 3.1 `process_onboarding_event` (Postgres function, called via RPC)
 Runs in a single transaction:
 1. `insert into webhook_events ... on conflict (event_id) do nothing`. No row inserted: return `duplicate`.
 2. `signup` and creator doesn't exist: insert the creator with `onboarding_started_at = occurred_at`, reconciled from stored events (above). A unique violation on `email` rolls back the whole transaction (the event is **not** recorded) and returns `email_conflict`.
 3. Non-`signup` and creator doesn't exist: return `pending`.
-4. Otherwise: **rank-guarded conditional update** (`update creators ... where rank(status) < rank(new_status) returning ...`). `became_live` is true only if this update returned a row and the new status is `live`. Concurrent events can't move status backwards and only one of them can report `became_live`.
+4. Otherwise, two **guarded conditional updates**, in order:
+   - Status change: `update creators set status = new_status, last_step_at = occurred_at, stuck_alert_sent_at = null, updated_at = now() where id = $id and rank(status) < rank(new_status) returning ...`. `became_live` is true only if this update returned a row and the new status is `live`.
+   - Only if the first updated nothing, time correction: `update creators set last_step_at = occurred_at, updated_at = now() where id = $id and rank(status) = rank(new_status) and occurred_at < last_step_at`.
+
+   Postgres re-checks each `where` against the latest row version under the row lock, so concurrent events can't move status backwards, can't move `last_step_at` later, and only one of them can report `became_live`.
 5. Returns `{ result, became_live, name, handle, onboarding_started_at, live_at }`.
 
 The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in sync by one shared table of transition cases: the unit tests run it against `nextState` and the in-memory repository, and an integration test runs the same table against the SQL function.
@@ -117,7 +122,7 @@ The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in 
 - **Known limitation:** creators are marked before Slack is called. If Slack fails right after the update, those alerts are lost (no retry queue, see section 7). The failure is logged with `[cron]`/`[slack]`.
 
 ## 5. Slack messages
-- Live: `:rocket: *{name}* ({handle}) is live! Onboarding took {hours}h.` (`hours` = `live_at` − `onboarding_started_at`, where `live_at` is the `occurred_at` of the event that made the creator live)
+- Live: `:rocket: *{name}* ({handle}) is live! Onboarding took {hours}h.` (`hours` = `max(0, live_at − onboarding_started_at)`, where `live_at` is the `occurred_at` of the event that made the creator live. It is clamped to 0 because a pending `payment_done` can have an `occurred_at` earlier than the signup's.)
 - Stuck: `:warning: {count} creator(s) stuck for 48h+` followed by one line per creator.
 - `&`, `<` and `>` in creator-provided values are escaped (`&amp;`, `&lt;`, `&gt;`) so names can't trigger mentions like `<!channel>`.
 - Slack errors are logged with `[slack]` and never change the HTTP response.
@@ -131,8 +136,8 @@ The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in 
 - Multiple webhook secrets or secret rotation
 
 ## 8. Decisions (formerly open questions)
-- **Non-`signup` event for a creator that doesn't exist yet:** store it and return **200** `{ "status": "pending" }`. When `signup` creates the creator, reconcile from the highest-ranked stored event for that `creator_id`, and send the live message if that's `payment_done`. Rejecting with 4xx was dropped: the event would already be recorded (retries become `duplicate`), and many senders don't retry on 4xx.
-- **Same transaction:** yes. One Postgres function, `process_onboarding_event`, called via RPC (section 3.1), with a rank-guarded conditional update; `became_live` comes from the update result. We accept the rank rule living in TS and SQL, kept in sync by a shared table of transition cases.
+- **Non-`signup` event for a creator that doesn't exist yet:** store it and return **200** `{ "status": "pending" }`. When `signup` creates the creator, reconcile from the stored events for that `creator_id` (`rank desc, occurred_at asc`, section 3), and send the live message if that gives `live`. Rejecting with 4xx was dropped: the event would already be recorded (retries become `duplicate`), and many senders don't retry on 4xx.
+- **Same transaction:** yes. One Postgres function, `process_onboarding_event`, called via RPC (section 3.1), with two guarded conditional updates (status change, then time correction); `became_live` comes from the status-change update result. We accept the rank rule living in TS and SQL, kept in sync by a shared table of transition cases.
 - **Signup with a new id but an existing email:** **409**, logged, not retried; the transaction is rolled back.
 - **Signup resent with a new `event_id`:** no-op on the creator, **200** `processed`.
 - **`occurred_at` more than 5 minutes in the future:** **400**. Past dates are fine.
@@ -151,10 +156,11 @@ Tests must cover:
 - [ ] `occurred_at` more than 5 minutes in the future returns 400
 - [ ] Same `event_id` twice: second call returns `duplicate` and has no side effects
 - [ ] Out-of-order event (`app_installed` after `payment_done`) does not move status back
-- [ ] Non-`signup` event before `signup` returns `pending`; the later `signup` reconciles to the highest-ranked stored step (and sends the live message if that's `payment_done`)
+- [ ] Equal-rank event with an earlier `occurred_at` moves `last_step_at` back without resetting `stuck_alert_sent_at` or sending Slack
+- [ ] Non-`signup` event before `signup` returns `pending`; the later `signup` reconciles to the highest-ranked stored step, earliest among ties (and sends the live message if that's `payment_done`)
 - [ ] `signup` resent with a new `event_id` returns `processed` and doesn't change the creator
 - [ ] `signup` with a new id but an existing email returns 409 and records nothing
-- [ ] Live message duration uses `onboarding_started_at`
+- [ ] Live message duration uses `onboarding_started_at` and is clamped to 0
 - [ ] Slack messages escape `&`, `<`, `>`
 - [ ] Slack failure still returns 200
 - [ ] Cron without the right token returns 401
