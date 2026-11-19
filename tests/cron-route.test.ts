@@ -173,7 +173,7 @@ describe("errors (500)", () => {
   it("an unparseable claim response logs that alerts were lost", async () => {
     const t = await setup({ repository: failing(UNEXPECTED_SHAPE) });
     expect(await t.get(AUTH)).toEqual({ status: 500, body: { error: "internal error" } });
-    expect(t.logs).toEqual(["[cron] claimed but unparseable response: alerts lost"]);
+    expect(t.logs).toEqual(["[cron] claimed but unparseable response (unexpected_shape): alerts lost"]);
   });
 
   it("a database error without a code logs unknown", async () => {

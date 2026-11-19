@@ -74,7 +74,7 @@ export function createStuckCreatorsHandler(getDeps: () => CronDeps): (request: R
         const code = err instanceof RepositoryError ? err.code : undefined;
         if (code === UNEXPECTED_SHAPE) {
           // The rows were already marked as alerted, so these alerts are lost.
-          logger.error("[cron] claimed but unparseable response: alerts lost");
+          logger.error(`[cron] claimed but unparseable response (${UNEXPECTED_SHAPE}): alerts lost`);
         } else {
           logger.error(`[cron] database error: ${code ?? "unknown"}`);
         }
