@@ -1,6 +1,7 @@
 // Server-only env vars (spec section 6). Validated lazily on first use, so
 // `next build` doesn't need secrets, and fails fast at runtime when one is
 // missing. Error messages name the variable and the problem, never the value.
+import "server-only";
 import { z } from "zod";
 
 const https = z.url({ protocol: /^https$/, hostname: /\./ });
