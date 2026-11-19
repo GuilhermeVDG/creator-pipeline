@@ -70,7 +70,7 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 |---|---|---|
 | `id` | uuid PK | comes from the webhook |
 | `name` | text not null | |
-| `email` | text not null | stored as sent (trimmed); unique index on `lower(email)`, so the 409 rule is case-insensitive |
+| `email` | text not null | stored as sent (trimmed); unique index on `lower(email)`, so the 409 rule is case-insensitive. Postgres `lower()` under the database collation is the source of truth; the in-memory fake matches it only for ASCII. |
 | `handle` | text | |
 | `status` | text not null | `signed_up`, `app_installed`, `live` |
 | `last_step_at` | timestamptz not null | earliest `occurred_at` among recorded events for the current status (see section 3) |
