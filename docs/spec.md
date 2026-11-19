@@ -35,7 +35,7 @@ Every new creator goes through a web onboarding flow (signup, install the creato
 | Field | Rule |
 |---|---|
 | `event_id` | string, 1–255 chars, stored exactly as sent (not trimmed) |
-| `occurred_at` | RFC 3339 date-time with a timezone (`Z` or `±hh:mm`) |
+| `occurred_at` | RFC 3339 date-time with a timezone (`Z` or `±hh:mm`), year 2000 or later (UTC) |
 | `creator.id` | any 8-4-4-4-12 hex id; lowercased |
 | `creator.name` | trimmed, 1–200 chars |
 | `creator.email` | trimmed, at most 320 chars, a light `local@domain` check (one `@`, no whitespace). Non-ASCII addresses are accepted, since the upstream flow already validated them. Case is kept as sent. |

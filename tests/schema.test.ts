@@ -148,9 +148,17 @@ describe("parseOnboardingEvent: occurred_at in the future", () => {
     expect(parseOnboardingEvent(update("payment_done", { occurred_at: "2026-11-18T14:10:00-04:00" }), NOW).ok).toBe(false);
   });
 
-  it("dates far in the past are valid", () => {
+  it("dates far in the past are valid, from the year 2000", () => {
     expect(parseOnboardingEvent(update("payment_done", { occurred_at: "2020-01-01T00:00:00Z" }), NOW).ok).toBe(true);
+    expect(parseOnboardingEvent(update("payment_done", { occurred_at: "2000-01-01T00:00:00Z" }), NOW).ok).toBe(true);
   });
+
+  it.each(["0000-01-01T00:00:00Z", "1999-12-31T23:59:59Z", "2000-01-01T00:30:00+01:00"])(
+    "%s is before 2000 (UTC) and invalid",
+    (occurred_at) => {
+      expect(issuesOf(update("payment_done", { occurred_at }))).toContainEqual(expect.stringMatching(/^occurred_at: /));
+    },
+  );
 
   it("fails closed when now is an invalid date", () => {
     expect(issuesOf(update("payment_done"), new Date(NaN))).toEqual(["now: invalid_date"]);

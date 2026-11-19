@@ -23,7 +23,11 @@ const eventId = z.string().min(1).max(255).refine(storable, STORABLE);
 // Any 8-4-4-4-12 hex id, as Postgres `uuid` accepts. Lowercased so TS-side
 // comparisons (in-memory repo, logs) agree with Postgres, which ignores case.
 const creatorId = z.guid().transform((s) => s.toLowerCase());
-const occurredAt = z.iso.datetime({ offset: true });
+/** Earliest accepted occurred_at year. Postgres rejects year 0, which would be a 500 retried forever. */
+export const MIN_OCCURRED_YEAR = 2000;
+const occurredAt = z.iso
+  .datetime({ offset: true })
+  .refine((s) => new Date(s).getUTCFullYear() >= MIN_OCCURRED_YEAR, { message: "too_far_in_past" });
 
 const signupCreator = z.object({
   id: creatorId,
