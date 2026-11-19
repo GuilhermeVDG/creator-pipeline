@@ -12,6 +12,7 @@ import {
   at,
   eventIdFor,
   type CaseEvent,
+  type EventExpectation,
   type EventResult,
 } from "./fixtures/transition-cases";
 
@@ -121,20 +122,26 @@ describe("reconcile", () => {
 });
 
 /**
- * Reference model for the shared table, built only from the pure functions:
- * a repeated event id is a duplicate; a non-signup with no creator is stored
- * (pending); signup creates the creator via reconcile; otherwise nextState.
+ * Reference model for the shared table: a repeated event id is a duplicate;
+ * a non-signup with no creator is stored (pending); signup creates the creator
+ * via reconcile; otherwise nextState. onboardingStartedAt (earliest signup wins)
+ * has no pure function yet; the repository implements it in step 6.
  */
 function runSequence(events: readonly CaseEvent[]) {
   const seen = new Set<string>();
   const pending: StepEvent[] = [];
-  let creator: CreatorState | null = null;
-  const perEvent: Array<{ result: EventResult; becameLive: boolean }> = [];
+  let creator: (CreatorState & { onboardingStartedAt: Date }) | null = null;
+  const perEvent: EventExpectation[] = [];
+  const skipped = (result: EventResult): EventExpectation => ({
+    result,
+    statusChanged: false,
+    becameLive: false,
+  });
 
   for (const [index, e] of events.entries()) {
     const id = eventIdFor(e, index);
     if (seen.has(id)) {
-      perEvent.push({ result: "duplicate", becameLive: false });
+      perEvent.push(skipped("duplicate"));
       continue;
     }
     seen.add(id);
@@ -143,43 +150,54 @@ function runSequence(events: readonly CaseEvent[]) {
     if (creator === null) {
       if (event.step !== "signup") {
         pending.push(event);
-        perEvent.push({ result: "pending", becameLive: false });
+        perEvent.push(skipped("pending"));
         continue;
       }
       const r = reconcile([event, ...pending]);
-      creator = { status: r.status, lastStepAt: r.lastStepAt };
-      perEvent.push({ result: "processed", becameLive: r.becameLive });
+      creator = { status: r.status, lastStepAt: r.lastStepAt, onboardingStartedAt: event.occurredAt };
+      perEvent.push({ result: "processed", statusChanged: true, becameLive: r.becameLive });
       continue;
     }
 
     const t = nextState(creator, event);
-    creator = { status: t.status, lastStepAt: t.lastStepAt };
-    perEvent.push({ result: "processed", becameLive: t.becameLive });
+    const onboardingStartedAt: Date =
+      event.step === "signup" && event.occurredAt < creator.onboardingStartedAt
+        ? event.occurredAt
+        : creator.onboardingStartedAt;
+    creator = { status: t.status, lastStepAt: t.lastStepAt, onboardingStartedAt };
+    perEvent.push({ result: "processed", statusChanged: t.changed, becameLive: t.becameLive });
   }
 
   return {
     perEvent,
     status: creator?.status ?? null,
     lastStepAt: creator?.lastStepAt ?? null,
+    onboardingStartedAt: creator?.onboardingStartedAt ?? null,
     liveMessages: perEvent.filter((p) => p.becameLive).length,
   };
 }
+
+const minutesOrNull = (m: number | null): Date | null => (m === null ? null : at(m));
 
 describe("shared transition cases (pure reference model)", () => {
   it.each(TRANSITION_CASES)("$name", ({ events, expected }) => {
     expect(runSequence(events)).toEqual({
       perEvent: events.map((e) => e.expect),
       status: expected.status,
-      lastStepAt: expected.lastStepAt === null ? null : at(expected.lastStepAt),
+      lastStepAt: minutesOrNull(expected.lastStepAt),
+      onboardingStartedAt: minutesOrNull(expected.onboardingStartedAt),
       liveMessages: expected.liveMessages,
     });
   });
 
-  it("every case's liveMessages matches its per-event becameLive count", () => {
+  it("the table is self-consistent", () => {
     for (const c of TRANSITION_CASES) {
-      expect(c.events.filter((e) => e.expect.becameLive).length, c.name).toBe(
-        c.expected.liveMessages,
-      );
+      const live = c.events.filter((e) => e.expect.becameLive).length;
+      expect(live, c.name).toBe(c.expected.liveMessages);
+      for (const e of c.events) {
+        if (e.expect.becameLive) expect(e.expect.statusChanged, c.name).toBe(true);
+        if (e.expect.result !== "processed") expect(e.expect.statusChanged, c.name).toBe(false);
+      }
     }
   });
 });
