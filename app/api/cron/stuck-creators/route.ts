@@ -22,3 +22,9 @@ function getDeps(): CronDeps {
 }
 
 export const GET = createStuckCreatorsHandler(getDeps);
+
+// Without this, Next answers HEAD with the GET handler, so a HEAD with a valid
+// token would claim and alert without the caller seeing the result.
+export function HEAD(): Response {
+  return new Response(null, { status: 405, headers: { allow: "GET" } });
+}

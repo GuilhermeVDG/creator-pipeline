@@ -217,3 +217,13 @@ describe("errors (500)", () => {
     errorSpy.mockRestore();
   });
 });
+
+describe("HEAD", () => {
+  it("returns 405 without running the handler", async () => {
+    const route = await import("@/app/api/cron/stuck-creators/route");
+    const res = route.HEAD();
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET");
+    expect(await res.text()).toBe("");
+  });
+});
