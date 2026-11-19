@@ -151,13 +151,23 @@ The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in 
 - **Known limitation:** creators are marked before Slack is called. If Slack fails right after the update, those alerts are lost (no retry queue, see section 7). The failure is logged with `[cron]`/`[slack]`.
 
 ## 5. Slack messages
-- Live: `:rocket: *{name}* ({handle}) is live! Onboarding took {hours}h.` (`hours` = `max(0, live_at − onboarding_started_at)`, where `live_at` is the `occurred_at` of the event that made the creator live. It is clamped to 0 because a pending `payment_done` can have an `occurred_at` earlier than the signup's.)
-- Stuck: `:warning: {count} creator(s) stuck for 48h+` followed by one line per creator.
-- `&`, `<` and `>` in creator-provided values are escaped (`&amp;`, `&lt;`, `&gt;`) so names can't trigger mentions like `<!channel>`.
-- Slack errors are logged with `[slack]` and never change the HTTP response.
+- Live: `:rocket: *{name}* ({handle}) is live! Onboarding took {hours}h.` (`hours` = `max(0, live_at − onboarding_started_at)`, where `live_at` is the `occurred_at` of the event that made the creator live. It is clamped to 0 because a pending `payment_done` can have an `occurred_at` earlier than the signup's. Rounded to one decimal, e.g. `26.3h`. The parentheses are left out when there is no handle.)
+- Stuck: `:warning: {count} creator(s) stuck for 48h+` followed by one line per creator: `• *{name}* ({handle}): {step}, stuck {hours}h`.
+  - `step` is a readable label: `signed up` or `app installed`.
+  - `hours` is whole hours since `last_step_at`, rounded down.
+  - At most 30 lines, then `…and {n} more`, so the message stays under Slack's size limit.
+- Creator-provided values (name, handle):
+  - cut to 80 characters plus `…`;
+  - control characters (including newlines), line/paragraph separators and bidi overrides become spaces, so a name can't fake extra lines;
+  - `&`, `<` and `>` are escaped (`&amp;`, `&lt;`, `&gt;`), so names can't trigger mentions like `<!channel>`;
+  - mrkdwn formatting characters (`*`, `_`, `~`, backtick) are left as they are.
+- Slack errors are logged with `[slack]` (status or error name only, never the webhook URL or the message) and never change the HTTP response. Requests time out after 3 s.
 
 ## 6. Environment
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `CRON_SECRET`. Validated once in `src/lib/env.ts`, **lazily on first use** (so `next build` doesn't need secrets), and fail fast at runtime if any is missing.
+- `WEBHOOK_SECRET` and `CRON_SECRET`: at least 32 characters, no surrounding whitespace (rejected, not trimmed).
+- `SUPABASE_URL` and `SLACK_WEBHOOK_URL`: https URLs.
+- `src/lib/env.ts` and the repository import `server-only`, so importing them from client code fails the build.
 
 ## 7. Out of scope
 - Admin UI and dashboards
