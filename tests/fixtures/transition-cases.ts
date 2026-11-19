@@ -175,6 +175,24 @@ export const TRANSITION_CASES: readonly TransitionCase[] = [
     expected: { status: "live", lastStepAt: 20, onboardingStartedAt: 0, liveMessages: 1 },
   },
 
+  {
+    name: "duplicate of a pending event: signup still reconciles once",
+    events: [
+      e("payment_done", 30, "pending", { eventId: "evt_pay" }),
+      e("payment_done", 30, "duplicate", { eventId: "evt_pay" }),
+      e("signup", 0, "processed", LIVE),
+    ],
+    expected: { status: "live", lastStepAt: 30, onboardingStartedAt: 0, liveMessages: 1 },
+  },
+  {
+    name: "duplicate signup event_id: duplicate, creator unchanged",
+    events: [
+      e("signup", 5, "processed", { ...CHANGED, eventId: "evt_signup" }),
+      e("signup", 5, "duplicate", { eventId: "evt_signup" }),
+    ],
+    expected: { status: "signed_up", lastStepAt: 5, onboardingStartedAt: 5, liveMessages: 0 },
+  },
+
   // Happy paths
   {
     name: "skipping app_installed goes straight to live",

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const SERVER_ONLY_MODULES = ["src/lib/env.ts"];
+const SERVER_ONLY_MODULES = ["src/lib/env.ts", "src/lib/creators/repository.ts"];
 
 describe("server-only modules", () => {
   it.each(SERVER_ONLY_MODULES)("%s imports server-only", (path) => {
