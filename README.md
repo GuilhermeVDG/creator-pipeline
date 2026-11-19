@@ -30,3 +30,9 @@ node --env-file=.env.local .claude/skills/send-test-webhook/send.mjs --step sign
 npm test
 npx tsc --noEmit
 ```
+
+Opt-in integration test against the **dev** Supabase project (apply the migration there first; credentials from `.env.local`):
+```bash
+npm run test:integration
+```
+It tags every row (`evt_test_…` event ids, `@test.invalid` emails), marks its creators as already alerted so the cron never posts them, and prints a cleanup `delete` for the SQL editor (the service role has no DELETE).
