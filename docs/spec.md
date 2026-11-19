@@ -143,13 +143,16 @@ The rank rule exists in both TypeScript (`nextState`) and SQL. They are kept in 
 
 ## 4. Stuck creators cron
 
-`GET /api/cron/stuck-creators`, called by Vercel Cron every hour.
+`GET /api/cron/stuck-creators`, called by Vercel Cron.
+
+- **Production schedule: every hour** (`0 * * * *`). Needs Vercel Pro or higher.
+- **Current deployment (Vercel Hobby): once a day** (`0 12 * * *`, 12:00 UTC) in `vercel.json`, because Hobby only allows daily crons, and may fire anywhere within that hour. A creator can then be alerted up to ~24h after crossing 48h. Switch `vercel.json` to `0 * * * *` when moving to Pro; nothing else changes.
 
 - Requires `Authorization: Bearer ${CRON_SECRET}` (timing-safe compare), otherwise **401**.
 - One atomic statement selects and marks the creators:
   `update creators set stuck_alert_sent_at = now() where status <> 'live' and last_step_at < now() - interval '48 hours' and stuck_alert_sent_at is null returning ...`
   This way overlapping runs can't double-alert, and a creator who moves forward at the same moment isn't marked for the new step.
-- Send **one** Slack message listing the returned creators (name, handle, current step, hours stuck since `last_step_at`). No message if none.
+- Send **one** Slack message listing the returned creators (name, handle, current step, hours stuck since `last_step_at`), **longest stuck first**. When the list is cut at 30 lines (section 5), the 30 longest stuck are shown. No message if none.
 - Respond `{ "alerted": <count> }`.
 - **Known limitation:** creators are marked before Slack is called. If Slack fails right after the update, those alerts are lost (no retry queue, see section 7). The failure is logged with `[cron]`/`[slack]`. The same applies if the database's response can't be parsed after the update (logged as `[cron]` with code `unexpected_shape`).
 

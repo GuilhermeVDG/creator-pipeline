@@ -20,6 +20,11 @@ Run the SQL in `supabase/migrations/` in the Supabase SQL editor (or with the Su
 node --env-file=.env.local .claude/skills/send-test-webhook/send.mjs --step signup
 ```
 
+## Deploy (Vercel)
+- Stuck-creators cron: `vercel.json` runs it **once a day** (`0 12 * * *`, UTC) because the project is on Vercel Hobby, which only allows daily crons.
+- **Production schedule is hourly** (`0 * * * *`, Vercel Pro or higher). To switch, change the `schedule` in `vercel.json`; no code changes.
+- Crons only run on production deployments. Set `CRON_SECRET` in the Vercel project; Vercel sends it as `Authorization: Bearer <CRON_SECRET>`.
+
 ## Tests
 ```bash
 npm test
