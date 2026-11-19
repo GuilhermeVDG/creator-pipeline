@@ -151,12 +151,12 @@ describe("stuckMessage", () => {
   const ana: StuckCreator = { name: "Ana", handle: "@ana", status: "signed_up", lastStepAt: h(0) };
   const bo: StuckCreator = { name: "Bo <!here>", handle: null, status: "app_installed", lastStepAt: h(10) };
 
-  it("header plus one line per creator, with current step and whole hours stuck", () => {
+  it("header plus one line per creator, with a readable step and whole hours stuck", () => {
     expect(stuckMessage([ana, bo], h(60.9))).toBe(
       [
         ":warning: 2 creator(s) stuck for 48h+",
-        "• *Ana* (@ana): signed_up, stuck 60h",
-        "• *Bo &lt;!here&gt;*: app_installed, stuck 50h",
+        "• *Ana* (@ana): signed up, stuck 60h",
+        "• *Bo &lt;!here&gt;*: app installed, stuck 50h",
       ].join("\n"),
     );
   });

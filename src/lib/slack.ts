@@ -115,6 +115,12 @@ export type StuckCreator = {
   lastStepAt: Date;
 };
 
+/** Readable step names for the stuck list. */
+export const STATUS_LABEL: Readonly<Record<Exclude<Status, "live">, string>> = {
+  signed_up: "signed up",
+  app_installed: "app installed",
+};
+
 /**
  * Lines after this are summarized. Worst case per line is two 80-char fields
  * escaped to 5x (`&` -> `&amp;`), about 850 chars, so 30 lines stay under
@@ -127,7 +133,7 @@ export function stuckMessage(creators: readonly [StuckCreator, ...StuckCreator[]
     .slice(0, MAX_STUCK_LINES)
     .map(
       (c) =>
-        `• ${nameWithHandle(c.name, c.handle)}: ${c.status}, stuck ${wholeHoursBetween(c.lastStepAt, now)}h`,
+        `• ${nameWithHandle(c.name, c.handle)}: ${STATUS_LABEL[c.status]}, stuck ${wholeHoursBetween(c.lastStepAt, now)}h`,
     );
   const rest = creators.length - MAX_STUCK_LINES;
   if (rest > 0) lines.push(`…and ${rest} more`);
