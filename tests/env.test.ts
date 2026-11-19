@@ -7,7 +7,7 @@ const VALID = {
   SUPABASE_SERVICE_ROLE_KEY: "service-role-test-value",
   WEBHOOK_SECRET: "w".repeat(32),
   SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/TEST/TEST/test",
-  CRON_SECRET: "c".repeat(16),
+  CRON_SECRET: "c".repeat(32),
 };
 
 function errorOf(source: Record<string, string | undefined>): EnvError {
@@ -39,8 +39,8 @@ describe("loadEnv", () => {
     expect(errorOf({ ...VALID, WEBHOOK_SECRET: "w".repeat(31) }).message).toContain("WEBHOOK_SECRET (too_small)");
   });
 
-  it("CRON_SECRET shorter than 16 characters fails", () => {
-    expect(errorOf({ ...VALID, CRON_SECRET: "c".repeat(15) }).message).toContain("CRON_SECRET (too_small)");
+  it("CRON_SECRET shorter than 32 characters fails", () => {
+    expect(errorOf({ ...VALID, CRON_SECRET: "c".repeat(31) }).message).toContain("CRON_SECRET (too_small)");
   });
 
   it.each([

@@ -21,7 +21,7 @@ const envSchema = z.object({
   // An empty or short secret would let anyone forge signatures.
   WEBHOOK_SECRET: secret(32),
   SLACK_WEBHOOK_URL: https,
-  CRON_SECRET: secret(16),
+  CRON_SECRET: secret(32),
 });
 
 export type Env = Readonly<z.infer<typeof envSchema>>;
